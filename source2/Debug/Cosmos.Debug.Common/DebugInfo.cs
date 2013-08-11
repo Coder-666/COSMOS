@@ -12,7 +12,12 @@ using System.Diagnostics.SymbolStore;
 using System.Configuration;
 using System.Threading;
 using System.Data.SQLite;
-using System.Data.Entity;
+using Dapper;
+using SQLinq;
+using SQLinq.Dapper;
+using DapperExtensions;
+using DapperExtensions.Mapper;
+using DapperExtensions.Sql;
 
 namespace Cosmos.Debug.Common {
   public class DebugInfo : IDisposable {
@@ -30,7 +35,7 @@ namespace Cosmos.Debug.Common {
     // Dont use DbConnectionStringBuilder class, it doesnt work with LocalDB properly.
     //protected mDataSouce = @".\SQLEXPRESS";
     protected string mConnStr;
-
+    
     public void DeleteDB(string aDbName, string aPathname) {
       File.Delete(aDbName);
     }
@@ -47,11 +52,11 @@ namespace Cosmos.Debug.Common {
       // Manually register the data provider. Do not remove this otherwise the data provider doesn't register properly.
       mConnStr = String.Format("data source={0};journal mode=Memory;synchronous=Off;foreign keys=True;", aPathname);
       // Use the SQLiteConnectionFactory as the default database connection
-      Database.DefaultConnectionFactory = new SQLiteConnectionFactory();
       // Do not open mConnection before mEntities.CreateDatabase
       mConnection = new SQLiteConnection(mConnStr);
+      DapperExtensions.DapperExtensions.DefaultMapper = typeof(PluralizedAutoClassMapper<>);
+      DapperExtensions.DapperExtensions.SqlDialect = new SqliteDialect();
       if (aCreate) {
-        using (var xEntities = DB()) {
           // DatabaseExists checks if the DBName exists, not physical files.
           if (aCreate) {
             mConnection.Open();
@@ -65,98 +70,108 @@ namespace Cosmos.Debug.Common {
             xSQL.MakeIndex("Labels", "Name", true);
             xSQL.MakeIndex("Methods", "DocumentID", false);
           }
-        }
       }
       if (mConnection.State == ConnectionState.Closed) {
         mConnection.Open();
       }
     }
 
+    public IDbConnection Connection
+    {
+        get
+        {
+            return mConnection;
+        }
+    }
+
     // The GUIDs etc are populated by the MSBuild task, so they wont be loaded when the debugger runs.
     // Because of this, we also allow manual loading.
     public void LoadLookups() {
-      using (var xDB = DB()) {
-        foreach (var xDoc in xDB.Documents) {
-          DocumentGUIDs.Add(xDoc.Pathname, xDoc.ID);
+        foreach (var xDoc in Connection.Query<Document>(new SQLinq<Document>().ToSQL().ToQuery()))
+        {
+            DocumentGUIDs.Add(xDoc.Pathname, xDoc.ID);
         }
-      }
     }
 
-    public UInt32 AddressOfLabel(string aLabel) {
-      using (var xDB = DB()) {
-        var xRow = xDB.Labels.SingleOrDefault(q => q.Name == aLabel);
-        if (xRow == null) {
-          return 0;
+    public UInt32 AddressOfLabel(string aLabel)
+    {
+        var xRow = Connection.Query<Label>(new SQLinq<Label>().Where(i => i.Name == aLabel)).FirstOrDefault();
+        
+        if (xRow == null)
+        {
+            return 0;
         }
         return (UInt32)xRow.Address;
-      }
     }
 
-    public string[] GetLabels(UInt32 aAddress) {
-      using (var xDB = DB()) {
-        var xLabels = from x in xDB.Labels
-                      where x.Address == aAddress
-                      select x.Name;
-        return xLabels.ToArray();
-      }
+    public string[] GetLabels(UInt32 aAddress)
+    {
+        var xLabels = Connection.Query<Label>(new SQLinq<Label>().Where(i => i.Address == aAddress)).Select(i => i.Name).ToArray();
+        return xLabels;
     }
 
     protected List<string> local_MappingTypeNames = new List<string>();
-    public void WriteFieldMappingToFile(IEnumerable<Field_Map> aMapping) {
-      var xMaps = aMapping.Where(delegate(Field_Map mp) {
-        if (local_MappingTypeNames.Contains(mp.TypeName)) {
-          return false;
-        } else {
-          local_MappingTypeNames.Add(mp.TypeName);
-          return true;
-        }
-      });
-
-      // Is a real DB now, but we still store all in RAM. We don't need to. Need to change to query DB as needed instead.
-      using (var xDB = DB()) {
-        foreach (var xItem in xMaps) {
-          foreach (var xFieldName in xItem.FieldNames) {
-            var xRow = new FIELD_MAPPING();
-            xRow.ID = NewGuid();
-            xRow.TYPE_NAME = xItem.TypeName;
-            xRow.FIELD_NAME = xFieldName;
-            xDB.FIELD_MAPPING.Add(xRow);
-          }
-        }
-        xDB.SaveChanges();
-      }
-    }
-
-    public Field_Map GetFieldMap(string aName) {
-      var xMap = new Field_Map();
-      xMap.TypeName = aName;
-      using (var xDB = DB()) {
-        var xRows = from x in xDB.FIELD_MAPPING
-                    where x.TYPE_NAME == aName
-                    select x.FIELD_NAME;
-        foreach (var xFieldName in xRows) {
-          xMap.FieldNames.Add(xFieldName);
-        }
-      }
-      return xMap;
-    }
-
-    public void ReadFieldMappingList(List<Field_Map> aSymbols) {
-      using (var xDB = DB()) {
-        var xMap = new Field_Map();
-        foreach (var xRow in xDB.FIELD_MAPPING) {
-          string xTypeName = xRow.TYPE_NAME;
-          if (xTypeName != xMap.TypeName) {
-            if (xMap.FieldNames.Count > 0) {
-              aSymbols.Add(xMap);
+    public void WriteFieldMappingToFile(IEnumerable<Field_Map> aMapping)
+    {
+        var xMaps = aMapping.Where(delegate(Field_Map mp)
+        {
+            if (local_MappingTypeNames.Contains(mp.TypeName))
+            {
+                return false;
             }
-            xMap = new Field_Map();
-            xMap.TypeName = xTypeName;
-          }
-          xMap.FieldNames.Add(xRow.FIELD_NAME);
+            else
+            {
+                local_MappingTypeNames.Add(mp.TypeName);
+                return true;
+            }
+        });
+
+        // Is a real DB now, but we still store all in RAM. We don't need to. Need to change to query DB as needed instead.
+        var xItemsToAdd = new List<FIELD_MAPPING>(1024);
+        foreach (var xItem in xMaps)
+        {
+            foreach (var xFieldName in xItem.FieldNames)
+            {
+                var xRow = new FIELD_MAPPING();
+                xRow.ID = NewGuid();
+                xRow.TYPE_NAME = xItem.TypeName;
+                xRow.FIELD_NAME = xFieldName;
+                xItemsToAdd.Add(xRow);
+            }
+        }
+        BulkInsert<FIELD_MAPPING>("FIELD_MAPPINGS", xItemsToAdd);
+    }
+
+    public Field_Map GetFieldMap(string aName)
+    {
+        var xMap = new Field_Map();
+        xMap.TypeName = aName;
+        var xRows = mConnection.Query<FIELD_MAPPING>(new SQLinq<FIELD_MAPPING>().Where(i => i.TYPE_NAME == aName).ToSQL().ToQuery());
+        foreach (var xFieldName in xRows)
+        {
+            xMap.FieldNames.Add(xFieldName.FIELD_NAME);
+        }
+        return xMap;
+    }
+
+    public void ReadFieldMappingList(List<Field_Map> aSymbols)
+    {
+        var xMap = new Field_Map();
+        foreach (var xRow in mConnection.GetList<FIELD_MAPPING>())
+        {
+            string xTypeName = xRow.TYPE_NAME;
+            if (xTypeName != xMap.TypeName)
+            {
+                if (xMap.FieldNames.Count > 0)
+                {
+                    aSymbols.Add(xMap);
+                }
+                xMap = new Field_Map();
+                xMap.TypeName = xTypeName;
+            }
+            xMap.FieldNames.Add(xRow.FIELD_NAME);
         }
         aSymbols.Add(xMap);
-      }
     }
 
     private static Guid NewGuid()
@@ -165,24 +180,19 @@ namespace Cosmos.Debug.Common {
     }
 
     protected List<string> mLocalFieldInfoNames = new List<string>();
-    public void WriteFieldInfoToFile(IEnumerable<FIELD_INFO> aFields) {
-      using (var xDB = DB()) {
-        foreach (var xItem in aFields) {
-          if (!mLocalFieldInfoNames.Contains(xItem.NAME)) {
-            xItem.ID = NewGuid();
-            mLocalFieldInfoNames.Add(xItem.NAME);
-            xDB.FIELD_INFO.Add(xItem);
-          }
+    public void WriteFieldInfoToFile(IList<FIELD_INFO> aFields)
+    {
+        var itemsToAdd = new List<FIELD_INFO>(aFields.Count);
+        foreach (var xItem in aFields)
+        {
+            if (!mLocalFieldInfoNames.Contains(xItem.NAME))
+            {
+                xItem.ID = NewGuid();
+                mLocalFieldInfoNames.Add(xItem.NAME);
+                itemsToAdd.Add(xItem);
+            }
         }
-        xDB.SaveChanges();
-      }
-    }
-
-    public Entities DB() {
-      // We have to create a new connection each time because threads can call this
-      // function and it causes issues for different threads to share the same connection, 
-      // even if they have different Entity (context) instances.
-        return new Entities(new SQLiteConnection(mConnStr), true);
+        BulkInsert<FIELD_INFO>("FIELD_INFOS", itemsToAdd, 2500, true);        
     }
 
     public class SequencePoint {
@@ -315,7 +325,7 @@ namespace Cosmos.Debug.Common {
       foreach (var x in aInfos) {
         x.ID = Guid.NewGuid();
       }
-      BulkInsert("LOCAL_ARGUMENT_INFO", aInfos);
+      BulkInsert("LOCAL_ARGUMENT_INFOS", aInfos, aFlush: true);
     }
 
     // EF is slow on bulk operations. But we want to retain explicit bindings to the model to avoid unbound mistakes.
@@ -327,8 +337,8 @@ namespace Cosmos.Debug.Common {
     // at time of writing the full structure would take up 11 MB of RAM just for this structure.
     // This is not a huge amount, but as we compile in more and more this figure will grow.
     // So as a compromise, we collect 2500 records then bulk insert.
-    public void BulkInsert<T>(string aTableName, IList<T> aList, int aFlushSize = 0, bool aFlush = false) {
-      if (aList.Count >= aFlushSize /*|| aFlush*/) {
+    public void BulkInsert<T>(string aTableName, IList<T> aList, int aFlushSize = 0, bool aFlush = false) where T: class {
+      if (aList.Count >= aFlushSize || aFlush) {
         if (aList.Count > 0) {
           using (var xBulkCopy = new SqliteBulkCopy(mConnection)) {
             xBulkCopy.DestinationTableName = aTableName;
@@ -375,7 +385,22 @@ namespace Cosmos.Debug.Common {
             //    db.Set(typeof(T)).AddRange(aList);
             //    db.SaveChanges();
             //}
-            xBulkCopy.WriteToServer(aList.AsDataReader());
+            //using (var trans = mConnection.BeginTransaction())
+            //{
+            //    try
+            //    {
+            //        mConnection.Insert<T>(aList);
+            //        trans.Commit();
+            //    }
+            //    catch(Exception E)
+            //    {
+            //        trans.Rollback();
+            //    }
+            //}
+            using (var reader = new ObjectReader<T>(aList.ToArray()))
+            {
+                xBulkCopy.WriteToServer(reader);
+            }
           }
           aList.Clear();
         }
@@ -391,6 +416,9 @@ namespace Cosmos.Debug.Common {
 
     public void Dispose() {
       if (mConnection != null) {
+          AddAssemblies(null, true);
+          AddDocument(null, true);
+          AddMethod(null, true);
         var xConn = mConnection;
         xConn.Close();
         xConn = null;
@@ -401,20 +429,18 @@ namespace Cosmos.Debug.Common {
       }
     }
 
-    public Method GetMethod(Entities aDB, UInt32 aAddress) {
+    public Method GetMethod(UInt32 aAddress) {
         // The address we have is somewhere in the method, but we need to find 
         // one that is also in MLSymbol. Asm labels for example wont be found.
         // So we find ones that match or are before, and we walk till we fine one
         // in MLSymbol.
-        var xLabels = from x in aDB.Labels
-                      where x.Address <= aAddress
-                      orderby x.Address descending
-                      select x.Name;
+      var xAddress = (long)aAddress;
+        var xLabels = mConnection.Query<Label>(new SQLinq<Label>().Where(i => i.Address <= xAddress).OrderByDescending(i=>i.Address)).Select(i => i.Name).ToArray();
 
         // Search till we find a matching label.
         MethodIlOp xSymbol = null;
         foreach (var xLabel in xLabels) {
-          xSymbol = aDB.MethodIlOps.SingleOrDefault(q => q.LabelName == xLabel);
+            xSymbol = mConnection.Query<MethodIlOp>(new SQLinq<MethodIlOp>().Where(i=>i.LabelName==xLabel)).FirstOrDefault();
           if (xSymbol != null) {
             break;
           }
@@ -423,24 +449,22 @@ namespace Cosmos.Debug.Common {
         if (xSymbol == null) {
           throw new Exception("Label not found.");
         }
-        return xSymbol.Method;
+        return mConnection.Get<Method>(xSymbol.MethodID);
     }
 
     // Gets MLSymbols for a method, given an address within the method.
-    public IEnumerable<MethodIlOp> GetSymbols(Entities aDB, Method aMethod) {
-        var xSymbols = from x in aDB.MethodIlOps
-                       where x.MethodID == aMethod.ID
-                       orderby x.IlOffset
-                       select x;
+    public IEnumerable<MethodIlOp> GetSymbols(Method aMethod) {
+        var xSymbols = mConnection.Query<MethodIlOp>(new SQLinq<MethodIlOp>().Where(i => i.MethodID == aMethod.ID).OrderBy(i => i.IlOffset));
         return xSymbols;
     }
 
-    public SourceInfos GetSourceInfos(UInt32 aAddress) {
-      var xResult = new SourceInfos();
-      using (var xDB = DB()) {
-        var xMethod = GetMethod(xDB, aAddress);
-        var xSymbols = GetSymbols(xDB, xMethod);
-        var xSymbolReader = SymbolAccess.GetReaderForFile(xMethod.AssemblyFile.Pathname);
+    public SourceInfos GetSourceInfos(UInt32 aAddress)
+    {
+        var xResult = new SourceInfos();
+        var xMethod = GetMethod(aAddress);
+        var xSymbols = GetSymbols(xMethod);
+        var xAssemblyFile = mConnection.Get<AssemblyFile>(xMethod.AssemblyFileID);
+        var xSymbolReader = SymbolAccess.GetReaderForFile(xAssemblyFile.Pathname);
         var xMethodSymbol = xSymbolReader.GetMethod(new SymbolToken(xMethod.MethodToken));
 
         int xSeqCount = xMethodSymbol.SequencePointCount;
@@ -452,28 +476,31 @@ namespace Cosmos.Debug.Common {
         var xCodeEndColumns = new int[xSeqCount];
         xMethodSymbol.GetSequencePoints(xCodeOffsets, xCodeDocuments, xCodeLines, xCodeColumns, xCodeEndLines, xCodeEndColumns);
 
-        foreach (var xSymbol in xSymbols) {
-          var xRow = xDB.Labels.SingleOrDefault(q => q.Name == xSymbol.LabelName);
-          if (xRow != null) {
-            UInt32 xAddress = (UInt32)xRow.Address;
-            // Each address could have mult labels, but this wont matter for SourceInfo, its not tied to label.
-            // So we just ignore duplicate addresses.
-            if (!xResult.ContainsKey(xAddress)) {
-              int xIdx = SourceInfo.GetIndexClosestSmallerMatch(xCodeOffsets, xSymbol.IlOffset);
-              var xSourceInfo = new SourceInfo() {
-                SourceFile = xCodeDocuments[xIdx].URL,
-                Line = xCodeLines[xIdx],
-                LineEnd = xCodeEndLines[xIdx],
-                Column = xCodeColumns[xIdx],
-                ColumnEnd = xCodeEndColumns[xIdx],
-                MethodName = xSymbol.Method.LabelCall
-              };
-              xResult.Add(xAddress, xSourceInfo);
+        foreach (var xSymbol in xSymbols)
+        {
+            var xRow = mConnection.Query<Label>(new SQLinq<Label>().Where(i => i.Name == xSymbol.LabelName)).FirstOrDefault();
+            if (xRow != null)
+            {
+                UInt32 xAddress = (UInt32)xRow.Address;
+                // Each address could have mult labels, but this wont matter for SourceInfo, its not tied to label.
+                // So we just ignore duplicate addresses.
+                if (!xResult.ContainsKey(xAddress))
+                {
+                    int xIdx = SourceInfo.GetIndexClosestSmallerMatch(xCodeOffsets, xSymbol.IlOffset);
+                    var xSourceInfo = new SourceInfo()
+                    {
+                        SourceFile = xCodeDocuments[xIdx].URL,
+                        Line = xCodeLines[xIdx],
+                        LineEnd = xCodeEndLines[xIdx],
+                        Column = xCodeColumns[xIdx],
+                        ColumnEnd = xCodeEndColumns[xIdx],
+                        MethodName = xMethod.LabelCall
+                    };
+                    xResult.Add(xAddress, xSourceInfo);
+                }
             }
-          }
         }
-      }
-      return xResult;
+        return xResult;
     }
 
   }

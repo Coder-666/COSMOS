@@ -1,11 +1,12 @@
 ; Do NOT change this next line in Dev Kit
-#define ChangeSetVersion "7"
+#define ChangeSetVersion "103291"
 
 #ifndef BuildConfiguration   
 ; Currently we dont use "UserKit" but this allows us to test/compile from Inno
 ; IDE so that we don't get an undefined error.
 ; We default to devkit so we dont have to wait on compression.
-  #define BuildConfiguration "devkit"
+  ;#define BuildConfiguration "devkit"
+  #define BuildConfiguration "userkit"
 #endif
 
 #if BuildConfiguration == "Devkit"
@@ -26,7 +27,7 @@
 AppId=CosmosUserKit
 AppName=Cosmos User Kit
 AppVerName=Cosmos User Kit v{#ChangeSetVersion}
-AppCopyright=Copyright © 2007-2012 The Cosmos Project
+AppCopyright=Copyright © 2007-2013 The Cosmos Project
 AppPublisher=Cosmos Project
 AppPublisherURL=http://www.goCosmos.org/
 AppSupportURL=http://www.goCosmos.org/
@@ -160,9 +161,8 @@ Source: ".\Build\VSIP\XSC.exe"; DestDir: "{app}\Build\Tools"; Flags: ignoreversi
 Source: ".\Build\VSIP\Cosmos.Deploy.USB.exe"; DestDir: "{app}\Build\Tools"; Flags: ignoreversion uninsremovereadonly
 Source: ".\Build\VSIP\Cosmos.Build.Common.dll"; DestDir: "{app}\Build\Tools"; Flags: ignoreversion uninsremovereadonly
 Source: ".\Build\VSIP\Mosa.Utility.IsoImage.dll"; DestDir: "{app}\Build\Tools"; Flags: ignoreversion uninsremovereadonly
-Source: ".\Build\VSIP\EntityFramework.dll"; DestDir: "{app}\Build\Tools"; Flags: ignoreversion uninsremovereadonly
+Source: ".\Resources\Dependencies\Dapper\*.*"; DestDir: "{app}\Build\Tools"; Flags: ignoreversion uninsremovereadonly
 Source: ".\Build\VSIP\System.Data.SQLite.dll"; DestDir: "{app}\Build\Tools"; Flags: ignoreversion uninsremovereadonly
-Source: ".\Build\VSIP\System.Data.SQLite.LinqEx.dll"; DestDir: "{app}\Build\Tools"; Flags: ignoreversion uninsremovereadonly
 ;
 Source: ".\Build\VSIP\Cosmos.Deploy.Pixie.exe"; DestDir: "{app}\Build\Tools"; Flags: ignoreversion uninsremovereadonly
 
@@ -180,12 +180,10 @@ Source: ".\source2\Cosmos.ico"; DestDir: "{app}"; Flags: ignoreversion uninsremo
 Source: ".\source2\Compiler\Cosmos.Compiler.DebugStub\*.xs"; DestDir: "{app}\XSharp\DebugStub\"; Flags: ignoreversion uninsremovereadonly
 
 ; System.Data.SQLite library
-Source: ".\Build\VSIP\EntityFramework.dll"; DestDir: "{app}\Build\VSIP"; Flags: ignoreversion uninsremovereadonly
+Source: ".\Resources\Dependencies\Dapper\*.*"; DestDir: "{app}\Build\VSIP"; Flags: ignoreversion uninsremovereadonly
 Source: ".\Build\VSIP\System.Data.SQLite.dll"; DestDir: "{app}\Build\VSIP"; Flags: ignoreversion uninsremovereadonly
-Source: ".\Build\VSIP\System.Data.SQLite.LinqEx.dll"; DestDir: "{app}\Build\VSIP"; Flags: ignoreversion uninsremovereadonly
-Source: ".\Build\VSIP\EntityFramework.dll"; DestDir: "{app}\MSBuild\Cosmos"; Flags: ignoreversion uninsremovereadonly
+Source: ".\Resources\Dependencies\Dapper\*.*"; DestDir: "{app}\MSBuild\Cosmos"; Flags: ignoreversion uninsremovereadonly
 Source: ".\Build\VSIP\System.Data.SQLite.dll"; DestDir: "{app}\MSBuild\Cosmos"; Flags: ignoreversion uninsremovereadonly
-Source: ".\Build\VSIP\System.Data.SQLite.LinqEx.dll"; DestDir: "{app}\MSBuild\Cosmos"; Flags: ignoreversion uninsremovereadonly
 
 ; VSIP stuff
 Source: ".\Build\VSIP\Cosmos.targets"; DestDir: "{pf32}\MSBuild\Cosmos"; Flags: ignoreversion uninsremovereadonly
