@@ -122,7 +122,14 @@ namespace Cosmos.VS.Windows
             bool foundCurrentLine = false;
 
             var xFont = new FontFamily("Consolas");
-            string xLabelPrefix = null;
+            //We need multiple prefix filters because method header has different prefix to IL labels.
+            //We use:
+            // - First "Method_" label prefix
+            // - First label without "GUID_" or "METHOD_" on it as that will be the name of the current method
+            List<string> xLabelPrefixes = new List<string>();
+            bool foundMETHOD_Prefix = false;
+            bool foundMethodName = false;
+            int mCurrentLineNumber = 0;
             foreach (var xLine in mLines)
             {
                 string xDisplayLine = xLine.ToString();
@@ -140,10 +147,18 @@ namespace Cosmos.VS.Windows
                             continue;
                         }
 
-                        if (xLabelPrefix == null)
+                        if (!foundMETHOD_Prefix && xAsmLabel.Label.StartsWith("METHOD_"))
                         {
                             var xLabelParts = xAsmLabel.Label.Split('.');
-                            xLabelPrefix = xLabelParts[0] + ".";
+                            xLabelPrefixes.Add(xLabelParts[0] + ".");
+                            foundMETHOD_Prefix = true;
+                        }
+                        else if(!foundMethodName && !xAsmLabel.Label.StartsWith("METHOD_") 
+                                                 && !xAsmLabel.Label.StartsWith("GUID_"))
+                        {
+                            var xLabelParts = xAsmLabel.Label.Split(':');
+                            xLabelPrefixes.Add(xLabelParts[0] + ".");
+                            foundMethodName = true;
                         }
                     }
                     else
@@ -160,7 +175,7 @@ namespace Cosmos.VS.Windows
                     }
 
                     // Replace all and not just labels so we get jumps, calls etc
-                    if (xLabelPrefix != null)
+                    foreach(string xLabelPrefix in xLabelPrefixes)
                     {
                         xDisplayLine = xDisplayLine.Replace(xLabelPrefix, "");
                     }
@@ -172,6 +187,11 @@ namespace Cosmos.VS.Windows
                     if (tblkSource.Inlines.Count > 0)
                     {
                         tblkSource.Inlines.Add(new LineBreak());
+                        if (!foundCurrentLine)
+                        {
+                            mCurrentLineNumber++;
+                        }
+
                         mCode.AppendLine();
                     }
                 }
@@ -243,11 +263,19 @@ namespace Cosmos.VS.Windows
                     xRun.Foreground = Brushes.HotPink;
                 }
 
+                if (!foundCurrentLine)
+                {
+                    mCurrentLineNumber++;
+                }
                 tblkSource.Inlines.Add(xRun);
                 tblkSource.Inlines.Add(new LineBreak());
 
                 mCode.AppendLine(xDisplayLine);
             }
+            //EdMan196: This line of code was worked out by trial and error. 
+            //If you change it proper testing/thinking, you will have to add RIP to your name.
+            double offset = mCurrentLineNumber * ((tblkSource.FontSize * tblkSource.FontFamily.LineSpacing) - 2.1);
+            ASMScrollViewer.ScrollToVerticalOffset(offset);
         }
 
         protected void OnASMCodeTextMouseUp(object aSender, System.Windows.Input.MouseButtonEventArgs aArgs)
