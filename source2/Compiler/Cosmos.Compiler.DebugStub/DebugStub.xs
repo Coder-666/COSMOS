@@ -59,7 +59,7 @@ function Executing {
 	   //This was INT1
 
 	   //Reset the debug register
-	   EAX ^ $4000
+	   EAX & $BFFF
 	   ! MOV DR6, EAX
 	   
 	   ResetINT1_TrapFLAG()
@@ -172,6 +172,7 @@ WaitCmd:
 
 	//If Asm step into, we need to continue execution
 	if AL = #Vs2Ds_AsmStepInto {
+		SetINT1_TrapFLAG()
 		goto Done
 	}
 

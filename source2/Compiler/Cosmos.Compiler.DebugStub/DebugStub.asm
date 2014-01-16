@@ -35,7 +35,7 @@ And EAX, 0x4000
 Cmp EAX, 0x4000
 JNE DebugStub_Executing_Block1_End
 
-Xor EAX, 0x4000
+And EAX, 0xBFFF
 MOV DR6, EAX
 
 Call DebugStub_ResetINT1_TrapFLAG
@@ -121,6 +121,7 @@ JE DebugStub_Break_Done
 
 Cmp AL, DebugStub_Const_Vs2Ds_AsmStepInto
 JNE DebugStub_Break_Block1_End
+Call DebugStub_SetINT1_TrapFLAG
 Jmp DebugStub_Break_Done
 DebugStub_Break_Block1_End:
 
