@@ -202,6 +202,8 @@ namespace Cosmos.Debug.VSDebugEngine
                         ASMBreakpoints.Add(new Tuple<UInt32, UInt32, int>(CSBPAddress, aAddress, xID));
 
                         mEngine.BPMgr.mActiveBPs[xID] = new AD7BoundBreakpoint(CSBPAddress);
+                        var label = mDebugInfoDb.GetLabels(CSBPAddress)[0];
+                        INT3sSet.Add(new KeyValuePair<uint, string>(CSBPAddress, label));
                         mDbgConnector.SetBreakpoint(xID, CSBPAddress);
 
                         set = true;
@@ -220,6 +222,8 @@ namespace Cosmos.Debug.VSDebugEngine
             if (bp != null)
             {
                 var xID = bp.Item3;
+                int index = INT3sSet.FindIndex(x => x.Key == bp.Item1);
+                INT3sSet.RemoveAt(index);
                 mDbgConnector.DeleteBreakpoint(xID);
                 mEngine.BPMgr.mActiveBPs[xID] = null;
                 ASMBreakpoints.Remove(bp);
@@ -422,6 +426,8 @@ namespace Cosmos.Debug.VSDebugEngine
             {
                 foreach (var xBBP in xBP.mBoundBPs)
                 {
+                    var label = mDebugInfoDb.GetLabels(xBBP.mAddress)[0];
+                    INT3sSet.Add(new KeyValuePair<uint, string>(xBBP.mAddress, label));
                     mDbgConnector.SetBreakpoint(xBBP.RemoteID, xBBP.mAddress);
                 }
             }
@@ -457,13 +463,13 @@ namespace Cosmos.Debug.VSDebugEngine
                 string[] currentASMLabels = mDebugInfoDb.GetLabels(aAddress);
                 foreach (string aLabel in currentASMLabels)
                 {
-                    if(aLabel.Contains("END__OF__METHOD_EXCEPTION__2"))
+                    if (aLabel.Contains("END__OF__METHOD_EXCEPTION__2"))
                     {
                         mASMSteppingOut_NumEndMethodLabelsPassed++;
                         break;
                     }
                 }
-                if(mASMSteppingOut_NumEndMethodLabelsPassed >= 2)
+                if (mASMSteppingOut_NumEndMethodLabelsPassed >= 2)
                 {
                     mASMSteppingOut = false;
                 }
@@ -474,17 +480,23 @@ namespace Cosmos.Debug.VSDebugEngine
             }
             else
             {
+                bool fullUpdate = true;
+
+
                 var xActionPoints = new List<object>();
                 var xBoundBreakpoints = new List<IDebugBoundBreakpoint2>();
 
-                // Search the BPs and find ones that match our address.
-                foreach (var xBP in mEngine.BPMgr.mPendingBPs)
+                if (!mBreaking)
                 {
-                    foreach (var xBBP in xBP.mBoundBPs)
+                    // Search the BPs and find ones that match our address.
+                    foreach (var xBP in mEngine.BPMgr.mPendingBPs)
                     {
-                        if (xBBP.mAddress == aAddress)
+                        foreach (var xBBP in xBP.mBoundBPs)
                         {
-                            xBoundBreakpoints.Add(xBBP);
+                            if (xBBP.mAddress == aAddress)
+                            {
+                                xBoundBreakpoints.Add(xBBP);
+                            }
                         }
                     }
                 }
@@ -492,15 +504,21 @@ namespace Cosmos.Debug.VSDebugEngine
                 mStackFrame = null;
                 mCurrentAddress = aAddress;
                 mCurrentASMLine = null;
-                bool fullUpdate = true;
                 if (xBoundBreakpoints.Count == 0)
                 {
-                    // if no matching breakpoints are found then its one of the following:
+                    // If no matching breakpoints are found then its one of the following:
+                    //   - VS Break
                     //   - Stepping operation
                     //   - Asm break
 
-                    //We _must_ respond to the VS stepping callback if its waiting on one so check this first...
-                    if (mStepping)
+
+                    //We _must_ respond to the VS commands via callback if VS is waiting on one so check this first...
+                    if (mBreaking)
+                    {
+                        mCallback.OnBreak(mThread);
+                        mBreaking = false;
+                    }
+                    else if (mStepping)
                     {
                         mCallback.OnStepComplete();
                         mStepping = false;
@@ -589,9 +607,12 @@ namespace Cosmos.Debug.VSDebugEngine
             throw new NotImplementedException();
         }
 
+        bool mBreaking = false;
         public int CauseBreak()
         {
-            throw new NotImplementedException();
+            mBreaking = true;
+            mDbgConnector.SendCmd(Vs2Ds.Break);
+            return VSConstants.S_OK;
         }
 
         public int Detach()
@@ -825,13 +846,20 @@ namespace Cosmos.Debug.VSDebugEngine
 
             ChangeINT3sOnCurrentMethod(true);
         }
-        List<UInt32> INT3sSet = new List<UInt32>();
+        public List<KeyValuePair<UInt32, string>> INT3sSet = new List<KeyValuePair<UInt32, string>>();
         internal void ChangeINT3sOnCurrentMethod(bool clear)
         {
             if (mCurrentAddress.HasValue)
             {
                 var currMethod = mDebugInfoDb.GetMethod(mCurrentAddress.Value);
-                var tpAdresses = mDebugInfoDb.GetAllINT3AddressesForMethod(currMethod);
+                //Clear out the full list so we don't accidentally accumulate INT3s all over the place
+                //Or set INT3s for all places in current method
+                var tpAdresses = clear ? new List<KeyValuePair<UInt32, string>>(INT3sSet.Count) : mDebugInfoDb.GetAllINT3AddressesForMethod(currMethod, true);
+                //If we just do a stright assigment then we get a collection modified exception in foreach loop below
+                if (clear)
+                {
+                    tpAdresses.AddRange(INT3sSet);
+                }
 
                 var bps = mEngine.BPMgr.mPendingBPs.Select(x => x.mBoundBPs).ToList();
                 var bpAddressessUnified = new List<UInt32>();
@@ -841,24 +869,27 @@ namespace Cosmos.Debug.VSDebugEngine
                 }
                 bpAddressessUnified.AddRange(mEngine.BPMgr.mActiveBPs.Select(x => x != null ? x.mAddress : 0));
 
-                foreach (uint address in tpAdresses)
+                foreach (var addressInfo in tpAdresses)
                 {
+                    var address = addressInfo.Key;
+                    
                     //Don't set/clear actual BPs
                     if (!bpAddressessUnified.Contains(address))
                     {
-                        bool set = INT3sSet.Contains(address);
+                        int index = INT3sSet.FindIndex(x => x.Key == address);
+                        bool set = index != -1;
 
                         if (clear && set)
                         {
                             //Clear the INT3
                             mDbgConnector.ClearINT3(address);
-                            INT3sSet.Remove(address);
+                            INT3sSet.RemoveAt(index);
                         }
-                        else if(!clear && !set)
+                        else if (!clear && !set)
                         {
                             //Set the INT3
                             mDbgConnector.SetINT3(address);
-                            INT3sSet.Add(address);
+                            INT3sSet.Add(addressInfo);
                         }
                     }
                 }
@@ -949,6 +980,18 @@ namespace Cosmos.Debug.VSDebugEngine
                     xCurrentLabel = "NO_METHOD_LABEL_FOUND";
                 }
 
+                // Insert filter labels list as THIRD(!) line of our data stream
+                string filterLabelsList = "";
+                foreach (var addressInfo in INT3sSet)
+                {
+                    //"We have to add the ".00:" because of how the ASM window works...
+                    filterLabelsList += "|" + addressInfo.Value + ".00";
+                }
+                if (filterLabelsList.Length > 0)
+                {
+                    filterLabelsList = filterLabelsList.Substring(1);
+                }
+                xCode.Insert(0, filterLabelsList + "\r\n");
                 // Insert parameters as SECOND(!) line of our data stream
                 xCode.Insert(0, (noDisplay ? "NoDisplay" : "") + "|" + (ASMSteppingMode ? "AsmStepMode" : "") + "\r\n");
                 // Insert current line's label as FIRST(!) line of our data stream
